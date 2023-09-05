@@ -1,0 +1,115 @@
+import RPi.GPIO as GPIO
+import time
+import requests
+
+# Define GPIO pins for light sensor and ultrasonic sensors
+LIGHT_SENSOR_PIN = 22
+ULTRASONIC_PINS = [
+    {'trig': 17, 'echo': 27},
+    {'trig': 23, 'echo': 24},
+    {'trig': 25, 'echo': 8},
+    {'trig': 16, 'echo': 26}
+]
+
+FAN_PIN = 6  # Change this to the actual GPIO pin for the fan
+BUZZER_PIN = 5  # Change this to the actual GPIO pin for the buzzer
+
+# URL for sending data
+URL = "https://gpstracklimbungan.site/MAN4/smart_toilet/fallstatus.php?status="
+
+# Initialize GPIO
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(LIGHT_SENSOR_PIN, GPIO.IN)
+GPIO.setup(FAN_PIN, GPIO.OUT, initial=GPIO.LOW)  # Fan starts off
+GPIO.setup(BUZZER_PIN, GPIO.OUT, initial=GPIO.LOW)  # Buzzer starts off
+for pins in ULTRASONIC_PINS:
+    GPIO.setup(pins['trig'], GPIO.OUT)
+    GPIO.setup(pins['echo'], GPIO.IN)
+
+def measure_distance(trig_pin, echo_pin):
+    # Send a trigger signal
+    GPIO.output(trig_pin, True)
+    time.sleep(0.00001)
+    GPIO.output(trig_pin, False)
+    
+    # Measure the time it takes for the echo signal to return
+    pulse_start = time.time()
+    while GPIO.input(echo_pin) == 0:
+        pulse_start = time.time()
+    
+    pulse_end = time.time()
+    while GPIO.input(echo_pin) == 1:
+        pulse_end = time.time()
+    
+    # Calculate distance based on the time elapsed
+    pulse_duration = pulse_end - pulse_start
+    distance = pulse_duration * 17150
+    return distance
+
+def send_condition(condition):
+    try:
+        full_url = URL + str(condition)
+        response = requests.get(full_url)
+        if response.status_code == 200:
+            print("Data sent successfully")
+            GPIO.output(BUZZER_PIN, GPIO.LOW)  # Turn off the buzzer when condition changes
+        else:
+            print("Failed to send data")
+    except Exception as e:
+        print("Error sending data:", str(e))
+
+def main():
+    fall_count = 0
+    consecutive_fall_count = 0
+    
+    try:
+        while True:
+            light_level = GPIO.input(LIGHT_SENSOR_PIN)
+            ultrasonic_distances = []
+            
+            for i, pins in enumerate(ULTRASONIC_PINS):
+                distance = measure_distance(pins['trig'], pins['echo'])
+                ultrasonic_distances.append(distance)
+                print(f"Ultrasonic Sensor {i+1}: Distance = {distance:.2f} cm")
+            
+            print("-------------------------")
+            
+            if light_level == GPIO.LOW:
+                if any(distance < 29 for distance in ultrasonic_distances):
+                    print("Person detected (proximity)")
+                    send_condition(2)
+                    consecutive_fall_count = 0
+                    GPIO.output(FAN_PIN, GPIO.HIGH)  # Turn on the fan
+                elif sum(distance > 27 for distance in ultrasonic_distances) >= 3:
+                    print("Fall person detected")
+                    fall_count += 1
+                    consecutive_fall_count += 1
+                    if consecutive_fall_count >= 10:
+                        print("More than 10 consecutive fall detections, sending 2")
+                        send_condition(3)
+                        consecutive_fall_count = 0  # Reset after sending condition "2"
+                    GPIO.output(BUZZER_PIN, GPIO.HIGH)  # Turn on the buzzer
+                    GPIO.output(FAN_PIN, GPIO.LOW)  # Turn off the fan
+                else:
+                    print("No person detected")
+                    send_condition(1)
+                    consecutive_fall_count = 0
+                    GPIO.output(BUZZER_PIN, GPIO.LOW)  # Turn off the buzzer
+                    GPIO.output(FAN_PIN, GPIO.LOW)  # Turn off the fan
+            else:
+                if all(distance > 29 for distance in ultrasonic_distances):
+                    print("No person detected (light)")
+                    send_condition(1)
+                    GPIO.output(FAN_PIN, GPIO.LOW)  # Turn off the fan
+                else:
+                    print("No person detected (light)")
+                    send_condition(1)
+                    GPIO.output(FAN_PIN, GPIO.LOW)  # Turn off the fan
+            
+            time.sleep(1)
+    
+    except KeyboardInterrupt:
+        GPIO.cleanup()
+
+if _name_ == "_main_":
+    main()
